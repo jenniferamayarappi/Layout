@@ -228,8 +228,9 @@ function getBestTaxonomy(textTokens) {
   return { item: best, score: bestScore };
 }
 
-function interpretScore(score) {
-  if (score >= 20) {
+
+function interpretScore(score, forceAcceptable = false) {
+  if (score >= 8) {
     return {
       label: "Excelente coherencia",
       color: "#16a34a",
@@ -237,7 +238,7 @@ function interpretScore(score) {
       descripcion: "El producto encaja muy bien con esta taxonomía."
     };
   }
-  if (score >= 10) {
+  if (score >= 4 || forceAcceptable) {
     return {
       label: "Coherencia aceptable",
       color: "#f59e0b",
@@ -254,16 +255,19 @@ function interpretScore(score) {
 }
 
 function evaluateCurrent(currentTax, bestTax, currentScore, bestScore) {
-  const lectura = interpretScore(currentScore);
   if (!currentTax) return {
     estado: "Revisar",
     clase: "warn",
     motivo: "No se encontró una coincidencia exacta de la taxonomía escrita dentro de la base cargada.",
     confianza: "Media",
     actualScore: currentScore,
-    lectura
+    lectura: interpretScore(currentScore)
   };
-  if (normalize(currentTax.c3) === normalize(bestTax.c3) && currentScore >= 3) {
+
+  const sameTaxonomy = normalize(currentTax.c3) === normalize(bestTax.c3);
+  const lectura = interpretScore(currentScore, sameTaxonomy);
+
+  if (sameTaxonomy && currentScore >= 3) {
     return {
       estado: "Correcta",
       clase: "ok",
@@ -293,86 +297,6 @@ function evaluateCurrent(currentTax, bestTax, currentScore, bestScore) {
   };
 }
 
-function scoreLayoutOption(option, tax, textTokens) {
-  let score = 0;
-  const optionKw = new Set(option.kw || []);
-  const taxKw = new Set(tax.kw || []);
-
-  textTokens.forEach(tok => {
-    if (optionKw.has(tok)) score += 2;
-  });
-
-  taxKw.forEach(tok => {
-    if (optionKw.has(tok)) score += 6;
-  });
-
-  const corridorNorm = normalize(option.corridor);
-  const subNorm = normalize(option.sub);
-  const c1Norm = normalize(tax.c1);
-  const c2Norm = normalize(tax.c2);
-  const c3Norm = normalize(tax.c3);
-
-  if (corridorNorm === c1Norm) score += 20;
-  else if (corridorNorm.includes(c1Norm) || c1Norm.includes(corridorNorm)) score += 10;
-
-  if (subNorm === c2Norm) score += 24;
-  else if (subNorm.includes(c2Norm) || c2Norm.includes(subNorm)) score += 12;
-
-  if (subNorm.includes(c3Norm)) score += 8;
-
-  return score;
-}
-
-function suggestLayout(tax, countryCode, catalogView, textTokens) {
-  const options = (((LAYOUTS_BY_COUNTRY_CATALOG[countryCode] || {})[catalogView]) || []);
-  if (!options.length) return null;
-  let best = null;
-  let bestScore = -999;
-
-  for (const option of options) {
-    const s = scoreLayoutOption(option, tax, textTokens);
-    if (s > bestScore) {
-      bestScore = s;
-      best = option;
-    }
-  }
-
-  return best;
-}
-
-function explainLayoutChoice(option, tax, textTokens) {
-  if (!option) return { reasons: [], matchedKeywords: [], exactMatch: false, warning: "No se encontró una opción de corredor/subcorredor disponible para esta combinación." };
-
-  const reasons = [];
-  const matchedKeywords = [];
-  const optionKw = new Set(option.kw || []);
-  const corridorNorm = normalize(option.corridor);
-  const subNorm = normalize(option.sub);
-  const c1Norm = normalize(tax.c1);
-  const c2Norm = normalize(tax.c2);
-  const exactCorridor = corridorNorm === c1Norm;
-  const exactSub = subNorm === c2Norm;
-
-  if (exactCorridor) reasons.push("El corredor coincide exactamente con la referencia taxonómica (C1).");
-  else if (corridorNorm.includes(c1Norm) || c1Norm.includes(corridorNorm)) reasons.push("El corredor tiene coincidencia parcial con la referencia taxonómica (C1).");
-
-  if (exactSub) reasons.push("El subcorredor coincide exactamente con la referencia taxonómica (C2).");
-  else if (subNorm.includes(c2Norm) || c2Norm.includes(subNorm)) reasons.push("El subcorredor tiene coincidencia parcial con la referencia taxonómica (C2).");
-
-  textTokens.forEach(tok => {
-    if (optionKw.has(tok) && !matchedKeywords.includes(tok)) matchedKeywords.push(tok);
-  });
-
-  if (matchedKeywords.length) reasons.push("Se detectaron palabras clave del producto que también aparecen en el layout sugerido.");
-  if (!reasons.length) reasons.push("La sugerencia se eligió como la mejor coincidencia disponible dentro del país y catalog view seleccionados.");
-
-  let warning = null;
-  if (!exactCorridor || !exactSub) {
-    warning = "No existe una coincidencia exacta entre la referencia taxonómica y el layout disponible; se muestra la opción más cercana encontrada.";
-  }
-
-  return { reasons, matchedKeywords, exactMatch: exactCorridor && exactSub, warning };
-}
 
 function buildNotes(textNorm, currentTax, suggestedTax, hasLayout) {
   const notes = [];
@@ -438,7 +362,9 @@ function validateTaxonomy() {
   const currentLayoutExplanation = explainLayoutChoice(currentLayout, currentTax, currentLayoutTokens);
   const suggestedLayoutExplanation = explainLayoutChoice(suggestedLayout, best.item, suggestedLayoutTokens);
   const activeExplanation = showSuggestion ? suggestedLayoutExplanation : currentLayoutExplanation;
-  const notes = buildNotes(normalize(analysisText), currentTax, best.item, !!(showSuggestion ? suggestedLayout : currentLayout));
+  const selectedLayout = showSuggestion ? suggestedLayout : currentLayout;
+  const hasUsableLayout = !!(selectedLayout && !selectedLayout.unavailable);
+  const notes = buildNotes(normalize(analysisText), currentTax, best.item, hasUsableLayout);
   const countryLabel = COUNTRY_LABELS[countryCode] || countryCode;
 
   placeholder.style.display = "none";
@@ -490,13 +416,13 @@ function validateTaxonomy() {
             <div class="suggestion-grid">
               <div class="suggestion-item"><small>Cat 3 sugerida</small><strong>${best.item.c3}</strong></div>
               <div class="suggestion-item"><small>Contexto</small><strong>${countryLabel} · ${catalogView}</strong></div>
-              <div class="suggestion-item"><small>Corredor sugerido</small><strong>${suggestedLayout ? suggestedLayout.corridor : "No disponible para esta combinación"}</strong></div>
-              <div class="suggestion-item"><small>Subcorredor sugerido</small><strong>${suggestedLayout ? suggestedLayout.sub : "No disponible para esta combinación"}</strong></div>
+              <div class="suggestion-item"><small>Corredor sugerido</small><strong>${suggestedLayout && !suggestedLayout.unavailable ? suggestedLayout.corridor : "No existe una ubicación válida"}</strong></div>
+              <div class="suggestion-item"><small>Subcorredor sugerido</small><strong>${suggestedLayout && !suggestedLayout.unavailable ? suggestedLayout.sub : "No existe una ubicación válida"}</strong></div>
               <div class="suggestion-item"><small>Referencia taxonómica</small><strong>${best.item.c1} · ${best.item.c2}</strong></div>
               <div class="suggestion-item"><small>Puntaje relativo</small><strong>${best.score}</strong></div>
             </div>
             <p style="margin:0; line-height:1.7; color:rgba(255,255,255,.86);">
-              El nombre o la descripción del producto encajan mejor con la definición de <strong>${best.item.c3}</strong> que con la taxonomía actual. La sugerencia se aterrizó a las opciones disponibles para el país y catalog view seleccionados.
+              ${suggestedLayout && !suggestedLayout.unavailable ? `El nombre o la descripción del producto encajan mejor con la definición de <strong>${best.item.c3}</strong> que con la taxonomía actual. La sugerencia se aterrizó a las opciones disponibles para el país y catalog view seleccionados.` : `El nombre o la descripción del producto encajan mejor con la definición de <strong>${best.item.c3}</strong>, pero no existe una ubicación válida dentro del país y catalog view seleccionados.`}
             </p>
           </div>
         `
@@ -506,13 +432,13 @@ function validateTaxonomy() {
             <div class="suggestion-grid">
               <div class="suggestion-item"><small>País</small><strong>${countryLabel}</strong></div>
               <div class="suggestion-item"><small>Catalog view</small><strong>${catalogView}</strong></div>
-              <div class="suggestion-item"><small>Corredor sugerido</small><strong>${currentLayout ? currentLayout.corridor : "No disponible para esta combinación"}</strong></div>
-              <div class="suggestion-item"><small>Subcorredor sugerido</small><strong>${currentLayout ? currentLayout.sub : "No disponible para esta combinación"}</strong></div>
+              <div class="suggestion-item"><small>Corredor sugerido</small><strong>${currentLayout && !currentLayout.unavailable ? currentLayout.corridor : "No existe una ubicación válida"}</strong></div>
+              <div class="suggestion-item"><small>Subcorredor sugerido</small><strong>${currentLayout && !currentLayout.unavailable ? currentLayout.sub : "No existe una ubicación válida"}</strong></div>
               <div class="suggestion-item"><small>Referencia taxonómica</small><strong>${currentTax.c1} · ${currentTax.c2}</strong></div>
               <div class="suggestion-item"><small>Puntaje actual</small><strong>${currentScore}</strong></div>
             </div>
             <p style="margin:0; line-height:1.7; color:rgba(255,255,255,.86);">
-              La información analizada parece consistente con la taxonomía actual. La sugerencia de ubicación se ajustó a las opciones disponibles para el país y catalog view seleccionados.
+              ${currentLayout && !currentLayout.unavailable ? `La información analizada parece consistente con la taxonomía actual. La sugerencia de ubicación se ajustó a las opciones disponibles para el país y catalog view seleccionados.` : `La taxonomía parece consistente, pero no existe una ubicación válida dentro del país y catalog view seleccionados.`}
             </p>
           </div>
         `
