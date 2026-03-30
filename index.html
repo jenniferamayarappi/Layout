@@ -228,19 +228,49 @@ function getBestTaxonomy(textTokens) {
   return { item: best, score: bestScore };
 }
 
+function interpretScore(score) {
+  if (score >= 20) {
+    return {
+      label: "Excelente coherencia",
+      color: "#16a34a",
+      bg: "#eafaf0",
+      descripcion: "El producto encaja muy bien con esta taxonomía."
+    };
+  }
+  if (score >= 10) {
+    return {
+      label: "Coherencia aceptable",
+      color: "#f59e0b",
+      bg: "#fff7df",
+      descripcion: "Puede ser correcto, pero vale la pena revisar algunos detalles."
+    };
+  }
+  return {
+    label: "Probablemente mal asignado",
+    color: "#dc2626",
+    bg: "#fee9e7",
+    descripcion: "El producto no coincide bien con esta taxonomía."
+  };
+}
+
 function evaluateCurrent(currentTax, bestTax, currentScore, bestScore) {
+  const lectura = interpretScore(currentScore);
   if (!currentTax) return {
     estado: "Revisar",
     clase: "warn",
     motivo: "No se encontró una coincidencia exacta de la taxonomía escrita dentro de la base cargada.",
-    confianza: "Media"
+    confianza: "Media",
+    actualScore: currentScore,
+    lectura
   };
   if (normalize(currentTax.c3) === normalize(bestTax.c3) && currentScore >= 3) {
     return {
       estado: "Correcta",
       clase: "ok",
       motivo: "La información del producto es coherente con la definición y características de la taxonomía actual.",
-      confianza: currentScore >= 6 ? "Alta" : "Media"
+      confianza: currentScore >= 6 ? "Alta" : "Media",
+      actualScore: currentScore,
+      lectura
     };
   }
   if (bestScore >= currentScore + 4) {
@@ -248,14 +278,18 @@ function evaluateCurrent(currentTax, bestTax, currentScore, bestScore) {
       estado: "Probablemente incorrecta",
       clase: "bad",
       motivo: "El nombre o la descripción del producto contienen señales bastante más alineadas con otra taxonomía que con la actual.",
-      confianza: bestScore >= 8 ? "Alta" : "Media"
+      confianza: bestScore >= 8 ? "Alta" : "Media",
+      actualScore: currentScore,
+      lectura
     };
   }
   return {
     estado: "Revisar",
     clase: "warn",
     motivo: "La información no contradice por completo la taxonomía actual, pero hay señales que hacen recomendable una revisión manual.",
-    confianza: "Media"
+    confianza: "Media",
+    actualScore: currentScore,
+    lectura
   };
 }
 
@@ -430,6 +464,22 @@ function validateTaxonomy() {
       <h3>Evaluación de coherencia</h3>
       <p class="muted">${evalResult.motivo}</p>
       <span class="status ${evalResult.clase}">${evalResult.estado} · Confianza ${evalResult.confianza}</span>
+
+      <div style="margin-top:14px;background:${evalResult.lectura.bg};border:1px solid ${evalResult.lectura.color}22;border-radius:16px;padding:14px 16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+          <strong style="color:${evalResult.lectura.color};font-size:15px;">${evalResult.lectura.label}</strong>
+          <small style="color:#667085;font-weight:700;">Indicador interno: ${evalResult.actualScore}</small>
+        </div>
+        <p style="margin:8px 0 0 0;color:#475467;line-height:1.6;font-size:14px;">${evalResult.lectura.descripcion}</p>
+        <div style="margin-top:12px;height:10px;background:#ffffffaa;border-radius:999px;overflow:hidden;border:1px solid #0000000d;">
+          <div style="height:100%;width:${Math.max(8, Math.min(100, evalResult.actualScore * 4))}%;background:${evalResult.lectura.color};border-radius:999px;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12px;color:#667085;">
+          <span>Baja coherencia</span>
+          <span>Aceptable</span>
+          <span>Muy alta</span>
+        </div>
+      </div>
     </div>
 
     ${
