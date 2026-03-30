@@ -72,8 +72,15 @@ button:hover {transform:translateY(-1px); box-shadow:0 18px 34px rgba(91,92,240,
 .suggestion-item small {color:rgba(255,255,255,.72)}
 .suggestion-item strong {font-size:14px; line-height:1.5}
 .note-list {margin:0; padding-left:20px; line-height:1.8; color:var(--muted); font-size:14px}
+.explain-box {background:linear-gradient(180deg,#fff,#f8faff); border:1px solid var(--line); border-radius:18px; padding:18px; margin-top:14px}
+.explain-grid {display:grid; grid-template-columns:1.2fr .8fr; gap:14px}
+.pill-list {display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
+.pill {display:inline-flex; padding:7px 10px; border-radius:999px; background:rgba(91,92,240,.10); color:#4f46e5; font-size:12px; font-weight:700; border:1px solid rgba(91,92,240,.12)}
+.alert {margin-top:14px; border-radius:16px; padding:14px 16px; font-size:13px; line-height:1.65; border:1px solid transparent}
+.alert.warn {background:var(--warnbg); color:var(--warn); border-color:rgba(154,103,0,.12)}
+.alert.ok {background:var(--successbg); color:var(--success); border-color:rgba(17,122,67,.12)}
 @media (max-width:980px) {.grid{grid-template-columns:1fr} .hero h1{font-size:28px}}
-@media (max-width:680px) {.row2,.kpi-row,.suggestion-grid{grid-template-columns:1fr} .wrapper{padding-left:14px;padding-right:14px} .hero,.card{padding:20px} .hero h1{font-size:24px}}
+@media (max-width:680px) {.row2,.kpi-row,.suggestion-grid,.explain-grid{grid-template-columns:1fr} .wrapper{padding-left:14px;padding-right:14px} .hero,.card{padding:20px} .hero h1{font-size:24px}}
 </style>
 </head>
 <body>
@@ -254,23 +261,40 @@ function evaluateCurrent(currentTax, bestTax, currentScore, bestScore) {
 
 function scoreLayoutOption(option, tax, textTokens) {
   let score = 0;
-  const kw = new Set(option.kw || []);
+  const optionKw = new Set(option.kw || []);
+  const taxKw = new Set(tax.kw || []);
+
   textTokens.forEach(tok => {
-    if (kw.has(tok)) score += 2;
+    if (optionKw.has(tok)) score += 2;
   });
+
+  taxKw.forEach(tok => {
+    if (optionKw.has(tok)) score += 6;
+  });
+
   const corridorNorm = normalize(option.corridor);
   const subNorm = normalize(option.sub);
-  if (corridorNorm.includes(normalize(tax.c1))) score += 5;
-  if (subNorm.includes(normalize(tax.c2))) score += 7;
-  if (subNorm.includes(normalize(tax.c3))) score += 5;
+  const c1Norm = normalize(tax.c1);
+  const c2Norm = normalize(tax.c2);
+  const c3Norm = normalize(tax.c3);
+
+  if (corridorNorm === c1Norm) score += 20;
+  else if (corridorNorm.includes(c1Norm) || c1Norm.includes(corridorNorm)) score += 10;
+
+  if (subNorm === c2Norm) score += 24;
+  else if (subNorm.includes(c2Norm) || c2Norm.includes(subNorm)) score += 12;
+
+  if (subNorm.includes(c3Norm)) score += 8;
+
   return score;
 }
 
 function suggestLayout(tax, countryCode, catalogView, textTokens) {
   const options = (((LAYOUTS_BY_COUNTRY_CATALOG[countryCode] || {})[catalogView]) || []);
   if (!options.length) return null;
-  let best = options[0];
+  let best = null;
   let bestScore = -999;
+
   for (const option of options) {
     const s = scoreLayoutOption(option, tax, textTokens);
     if (s > bestScore) {
@@ -278,7 +302,42 @@ function suggestLayout(tax, countryCode, catalogView, textTokens) {
       best = option;
     }
   }
+
   return best;
+}
+
+function explainLayoutChoice(option, tax, textTokens) {
+  if (!option) return { reasons: [], matchedKeywords: [], exactMatch: false, warning: "No se encontró una opción de corredor/subcorredor disponible para esta combinación." };
+
+  const reasons = [];
+  const matchedKeywords = [];
+  const optionKw = new Set(option.kw || []);
+  const corridorNorm = normalize(option.corridor);
+  const subNorm = normalize(option.sub);
+  const c1Norm = normalize(tax.c1);
+  const c2Norm = normalize(tax.c2);
+  const exactCorridor = corridorNorm === c1Norm;
+  const exactSub = subNorm === c2Norm;
+
+  if (exactCorridor) reasons.push("El corredor coincide exactamente con la referencia taxonómica (C1).");
+  else if (corridorNorm.includes(c1Norm) || c1Norm.includes(corridorNorm)) reasons.push("El corredor tiene coincidencia parcial con la referencia taxonómica (C1).");
+
+  if (exactSub) reasons.push("El subcorredor coincide exactamente con la referencia taxonómica (C2).");
+  else if (subNorm.includes(c2Norm) || c2Norm.includes(subNorm)) reasons.push("El subcorredor tiene coincidencia parcial con la referencia taxonómica (C2).");
+
+  textTokens.forEach(tok => {
+    if (optionKw.has(tok) && !matchedKeywords.includes(tok)) matchedKeywords.push(tok);
+  });
+
+  if (matchedKeywords.length) reasons.push("Se detectaron palabras clave del producto que también aparecen en el layout sugerido.");
+  if (!reasons.length) reasons.push("La sugerencia se eligió como la mejor coincidencia disponible dentro del país y catalog view seleccionados.");
+
+  let warning = null;
+  if (!exactCorridor || !exactSub) {
+    warning = "No existe una coincidencia exacta entre la referencia taxonómica y el layout disponible; se muestra la opción más cercana encontrada.";
+  }
+
+  return { reasons, matchedKeywords, exactMatch: exactCorridor && exactSub, warning };
 }
 
 function buildNotes(textNorm, currentTax, suggestedTax, hasLayout) {
@@ -329,8 +388,22 @@ function validateTaxonomy() {
   const currentScore = scoreTaxonomy(currentTax, analysisTokens);
   const evalResult = evaluateCurrent(currentTax, best.item, currentScore, best.score);
   const showSuggestion = normalize(currentTax.c3) !== normalize(best.item.c3) && evalResult.estado !== "Correcta";
-  const currentLayout = suggestLayout(currentTax, countryCode, catalogView, analysisTokens);
-  const suggestedLayout = suggestLayout(best.item, countryCode, catalogView, analysisTokens);
+
+  const currentLayoutTokens = unique([
+    ...analysisTokens,
+    ...tokenize(`${currentTax.c1} ${currentTax.c2} ${currentTax.c3} ${currentTax.definition} ${currentTax.features || ""}`)
+  ]);
+
+  const suggestedLayoutTokens = unique([
+    ...analysisTokens,
+    ...tokenize(`${best.item.c1} ${best.item.c2} ${best.item.c3} ${best.item.definition} ${best.item.features || ""}`)
+  ]);
+
+  const currentLayout = suggestLayout(currentTax, countryCode, catalogView, currentLayoutTokens);
+  const suggestedLayout = suggestLayout(best.item, countryCode, catalogView, suggestedLayoutTokens);
+  const currentLayoutExplanation = explainLayoutChoice(currentLayout, currentTax, currentLayoutTokens);
+  const suggestedLayoutExplanation = explainLayoutChoice(suggestedLayout, best.item, suggestedLayoutTokens);
+  const activeExplanation = showSuggestion ? suggestedLayoutExplanation : currentLayoutExplanation;
   const notes = buildNotes(normalize(analysisText), currentTax, best.item, !!(showSuggestion ? suggestedLayout : currentLayout));
   const countryLabel = COUNTRY_LABELS[countryCode] || countryCode;
 
@@ -394,6 +467,32 @@ function validateTaxonomy() {
           </div>
         `
     }
+
+    <div class="explain-box">
+      <h3 style="margin:0 0 12px; font-size:18px;">¿Por qué eligió esta ubicación?</h3>
+      <div class="explain-grid">
+        <div>
+          <p class="muted" style="margin-bottom:8px;">${activeExplanation.reasons.join(" ")}</p>
+          <div class="pill-list">
+            ${activeExplanation.matchedKeywords.length
+              ? activeExplanation.matchedKeywords.map(k => `<span class="pill">${k}</span>`).join("")
+              : `<span class="pill">Sin keywords activadoras detectadas</span>`}
+          </div>
+        </div>
+        <div>
+          <div class="section" style="margin:0; background:transparent;">
+            <h3 style="margin-top:0;">Resumen técnico</h3>
+            <p class="muted"><strong>Coincidencia exacta:</strong> ${activeExplanation.exactMatch ? "Sí" : "No"}</p>
+            <p class="muted"><strong>Referencia taxonómica:</strong> ${showSuggestion ? `${best.item.c1} · ${best.item.c2}` : `${currentTax.c1} · ${currentTax.c2}`}</p>
+          </div>
+        </div>
+      </div>
+      <div class="alert ${activeExplanation.exactMatch ? 'ok' : 'warn'}">
+        ${activeExplanation.exactMatch
+          ? 'Se encontró una coincidencia exacta o altamente alineada entre la referencia taxonómica y el layout sugerido.'
+          : (activeExplanation.warning || 'La sugerencia corresponde a la mejor opción disponible dentro del layout seleccionado.')}
+      </div>
+    </div>
 
     <div class="section">
       <h3>Notas para el agente</h3>
